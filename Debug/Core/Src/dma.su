@@ -1,0 +1,5 @@
+core_cm7.h:1884:26:__NVIC_GetPriorityGrouping	4	static
+core_cm7.h:1896:22:__NVIC_EnableIRQ	16	static
+core_cm7.h:2024:22:__NVIC_SetPriority	16	static
+core_cm7.h:2071:26:NVIC_EncodePriority	40	static
+dma.c:38:6:MX_DMA_Init	16	static

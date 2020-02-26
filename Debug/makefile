@@ -44,8 +44,8 @@ F7_UART.bin \
 all: F7_UART.elf secondary-outputs
 
 # Tool invocations
-F7_UART.elf: $(OBJS) $(USER_OBJS) C:\Users\Lorant\STM32CubeIDE\workspace_1.0.2\F7_UART\STM32F746ZGTX_FLASH.ld
-	arm-none-eabi-gcc -o "F7_UART.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m7 -T"C:\Users\Lorant\STM32CubeIDE\workspace_1.0.2\F7_UART\STM32F746ZGTX_FLASH.ld" --specs=nosys.specs -Wl,-Map="F7_UART.map" -Wl,--gc-sections -static --specs=nano.specs -mfpu=fpv5-sp-d16 -mfloat-abi=hard -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
+F7_UART.elf: $(OBJS) $(USER_OBJS) C:\Users\Lorant\Documents\Git\stm32f7_rtosv2_uart_dma\STM32F746ZGTX_FLASH.ld
+	arm-none-eabi-gcc -o "F7_UART.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m7 -T"C:\Users\Lorant\Documents\Git\stm32f7_rtosv2_uart_dma\STM32F746ZGTX_FLASH.ld" --specs=nosys.specs -Wl,-Map="F7_UART.map" -Wl,--gc-sections -static --specs=nano.specs -mfpu=fpv5-sp-d16 -mfloat-abi=hard -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
 	@echo 'Finished building target: $@'
 	@echo ' '
 

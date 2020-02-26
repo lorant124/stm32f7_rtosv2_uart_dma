@@ -27,6 +27,9 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "ringbuff.h"
+#include "minmea.h"
+#include "task.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -41,6 +44,8 @@
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
 extern osMessageQueueId_t usart_rx_dma_queue_idHandle;
+
+static ubx_prt[28] = {0xB5, 0x62, 0x06, 0x00, 0x14, 0x00, 0x01, 0x00, 0x00, 0x00, 0xD0, 0x08, 0x00, 0x00, 0x80, 0x25, 0x00, 0x00, 0x23, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0xBC, 0x89};
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
@@ -48,10 +53,12 @@ extern osMessageQueueId_t usart_rx_dma_queue_idHandle;
 /* USER CODE BEGIN PV */
 void usart_rx_check(void);
 void usart_process_data(const void* data, size_t len);
+void usart_process_data2(const void* data, size_t len);
 void usart_send_string(const char* str);
 void usart_rx_dma_thread(void* arg);
 void DMA1_Stream5_IRQHandlerX(void);
 void USART2_IRQHandlerX(void);
+uint8_t usart_start_tx_dma_transfer(void);
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -59,12 +66,22 @@ void SystemClock_Config(void);
 void MX_FREERTOS_Init(void);
 /* USER CODE BEGIN PFP */
 #define ARRAY_LEN(x)            (sizeof(x) / sizeof((x)[0]))
-static uint8_t usart_rx_dma_buffer[200];
+static uint8_t usart_rx_dma_buffer[500];
+
+ ringbuff_t usart_rx_dma_ringbuff;
+ uint8_t usart_rx_dma_ringbuff_data[500];
+ ringbuff_t usart_tx_dma_ringbuff;
+ uint8_t usart_tx_dma_ringbuff_data[500];
+ size_t usart_tx_dma_current_len = 0;
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
+const osThreadAttr_t myTask03_attributes = {
+  .name = "usart_rx_dma_thread",
+  .priority = (osPriority_t) osPriorityNormal1,
+  .stack_size = 1000
+};
 /* USER CODE END 0 */
 
 /**
@@ -74,6 +91,7 @@ static uint8_t usart_rx_dma_buffer[200];
 int main(void)
 {
   /* USER CODE BEGIN 1 */
+
 
   /* USER CODE END 1 */
   
@@ -91,6 +109,8 @@ int main(void)
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
+  ringbuff_init(&usart_tx_dma_ringbuff, usart_tx_dma_ringbuff_data, sizeof(usart_tx_dma_ringbuff_data));
+  ringbuff_init(&usart_rx_dma_ringbuff, usart_rx_dma_ringbuff_data, sizeof(usart_rx_dma_ringbuff_data));
 
   /* USER CODE END SysInit */
 
@@ -110,13 +130,20 @@ int main(void)
   LL_USART_EnableDMAReq_RX(USART2);
   LL_USART_EnableIT_IDLE(USART2);
 
+  LL_DMA_SetPeriphAddress(DMA1, LL_DMA_STREAM_4, (uint32_t)&UART4->TDR);
+  LL_DMA_EnableIT_TC(DMA1, LL_DMA_STREAM_4);
+  LL_USART_EnableDMAReq_TX(UART4);
+
   MX_FREERTOS_Init();
-  osThreadNew(usart_rx_dma_thread, NULL, NULL);
+  osThreadNew(usart_rx_dma_thread, NULL, &myTask03_attributes);
+  //gnss_set(USART2 , 28, ubx_prt);
+
   /* USER CODE END 2 */
   /* Init scheduler */
   osKernelInitialize();
  
   /* Call init function for freertos objects (in freertos.c) */
+  MX_FREERTOS_Init(); 
  
   /* Start scheduler */
   osKernelStart();
@@ -127,6 +154,7 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -206,6 +234,18 @@ void DMA1_Stream5_IRQHandlerX(void) {
     /* Implement other events when needed */
 }
 
+void DMA1_Stream4_IRQHandlerX(void) {
+    /* Check transfer-complete interrupt */
+    if (LL_DMA_IsEnabledIT_TC(DMA1, LL_DMA_STREAM_4) && LL_DMA_IsActiveFlag_TC4(DMA1)) {
+        LL_DMA_ClearFlag_TC4(DMA1);             /* Clear transfer complete flag */
+        ringbuff_skip(&usart_tx_dma_ringbuff, usart_tx_dma_current_len);/* Skip buffer, it has been successfully sent out */
+        usart_tx_dma_current_len = 0;           /* Reset data length */
+        usart_start_tx_dma_transfer();          /* Start new transfer */
+    }
+
+    /* Implement other events when needed */
+}
+
 void USART2_IRQHandlerX(void) {
     void* d = (void *)1;
 
@@ -217,12 +257,53 @@ void USART2_IRQHandlerX(void) {
     /* Implement other events when needed */
 }
 
+uint8_t
+usart_start_tx_dma_transfer(void) {
+    uint32_t old_primask;
+    uint8_t started = 0;
+
+    /* Check if DMA is active */
+    /* Must be set to 0 */
+    old_primask = __get_PRIMASK();
+    __disable_irq();
+
+    /* Check if transfer is not active */
+    if (usart_tx_dma_current_len == 0) {
+        /* Check if something to send  */
+        usart_tx_dma_current_len = ringbuff_get_linear_block_read_length(&usart_tx_dma_ringbuff);
+        if (usart_tx_dma_current_len > 0) {
+            /* Disable channel if enabled */
+        	LL_DMA_DisableStream(DMA1, LL_DMA_STREAM_4);
+
+            /* Clear all flags */
+            LL_DMA_ClearFlag_TC4(DMA1);
+            LL_DMA_ClearFlag_HT4(DMA1);
+           // LL_DMA_ClearFlag_GI3(DMA1);
+            LL_DMA_ClearFlag_TE4(DMA1);
+            LL_DMA_ClearFlag_DME4(DMA1);
+            LL_DMA_ClearFlag_FE4(DMA1);
+            /* Start DMA transfer */
+            LL_DMA_SetDataLength(DMA1, LL_DMA_STREAM_4, usart_tx_dma_current_len);
+            LL_DMA_SetMemoryAddress(DMA1, LL_DMA_STREAM_4, (uint32_t)ringbuff_get_linear_block_read_address(&usart_tx_dma_ringbuff));
+
+            /* Start new transfer */
+            LL_DMA_EnableStream(DMA1, LL_DMA_STREAM_4);
+            started = 1;
+        }
+    }
+
+    __set_PRIMASK(old_primask);
+
+    return started;
+}
 void usart_send_string(const char* str) {
-    usart_process_data(str, strlen(str));
+    //usart_process_data(str, strlen(str));
+    ringbuff_write(&usart_rx_dma_ringbuff, str, strlen(str));   /* Write data to TX buffer for loopback */
+    usart_start_tx_dma_transfer();              /* Then try to start transfer */
 }
 
 void usart_process_data(const void* data, size_t len) {
-    const uint8_t* d = data;
+
 
     /*
      * This function is called on DMA TC and HT events, aswell as on UART IDLE (if enabled) line event.
@@ -230,38 +311,75 @@ void usart_process_data(const void* data, size_t len) {
      * For the sake of this example, function does a loop-back data over UART in polling mode.
      * Check ringbuff RX-based example for implementation with TX & RX DMA transfer.
      */
+   /*const uint8_t* d = data;
+   for (; len > 0; --len, ++d) {
+        LL_USART_TransmitData8(UART4, *d);
+        while (!LL_USART_IsActiveFlag_TXE(UART4)) {}
+    }
+    while (!LL_USART_IsActiveFlag_TC(UART4)) {}*/
 
-    for (; len > 0; --len, ++d) {
+	ringbuff_write(&usart_rx_dma_ringbuff, data, len);
+}
+
+void usart_process_data2(const void* data, size_t len) {
+
+
+    /*
+     * This function is called on DMA TC and HT events, aswell as on UART IDLE (if enabled) line event.
+     *
+     * For the sake of this example, function does a loop-back data over UART in polling mode.
+     * Check ringbuff RX-based example for implementation with TX & RX DMA transfer.
+     */
+   const uint8_t* d = data;
+   for (; len > 0; --len, ++d) {
         LL_USART_TransmitData8(UART4, *d);
         while (!LL_USART_IsActiveFlag_TXE(UART4)) {}
     }
     while (!LL_USART_IsActiveFlag_TC(UART4)) {}
+
+
 }
+
+int16_t find_str_end(uint8_t *str, uint16_t old_pos, uint16_t pos)
+{
+	uint16_t i;
+	int16_t ret = -1;
+	for(i = old_pos; i < pos; i++)
+	{
+		if(str[i] == '*' )
+		{
+			ret = i + 5;
+			return ret;
+		}
+		else
+			ret = -1;
+	}
+
+	return ret;
+
+}
+
 
 void usart_rx_check(void) {
     static size_t old_pos;
     size_t pos;
 
-    /* Calculate current position in buffer */
+
     pos = ARRAY_LEN(usart_rx_dma_buffer) - LL_DMA_GetDataLength(DMA1, LL_DMA_STREAM_5);
-    if (pos != old_pos) {                       /* Check change in received data */
-        if (pos > old_pos) {                    /* Current position is over previous one */
-            /* We are in "linear" mode */
-            /* Process data directly by subtracting "pointers" */
+    if (pos != old_pos) {
+        if (pos > old_pos) {
             usart_process_data(&usart_rx_dma_buffer[old_pos], pos - old_pos);
         } else {
-            /* We are in "overflow" mode */
-            /* First process data to the end of buffer */
+
             usart_process_data(&usart_rx_dma_buffer[old_pos], ARRAY_LEN(usart_rx_dma_buffer) - old_pos);
-            /* Check and continue with beginning of buffer */
+
             if (pos > 0) {
                 usart_process_data(&usart_rx_dma_buffer[0], pos);
             }
         }
     }
-    old_pos = pos;                              /* Save current position as old */
+    old_pos = pos;
 
-    /* Check and manually update if we reached end of buffer */
     if (old_pos == ARRAY_LEN(usart_rx_dma_buffer)) {
         old_pos = 0;
     }

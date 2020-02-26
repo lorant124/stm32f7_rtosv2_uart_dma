@@ -23,15 +23,21 @@
 #include "task.h"
 #include "main.h"
 #include "cmsis_os.h"
-
+#include "ringbuff.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */     
-
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-
+extern	 ringbuff_t usart_rx_dma_ringbuff;
+extern	 uint8_t usart_rx_dma_ringbuff_data[128];
+extern	 ringbuff_t usart_tx_dma_ringbuff;
+extern   uint8_t usart_tx_dma_ringbuff_data[128];
+extern	 size_t usart_tx_dma_current_len;
+extern void usart_send_string(const char* str);
+extern uint8_t usart_start_tx_dma_transfer(void);
+extern void usart_process_data2(const void* data, size_t len);
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -41,7 +47,8 @@
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
-
+uint8_t b, state = 0, local_buff[100] = {0};
+uint16_t cnt = 0;
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
@@ -53,14 +60,14 @@ osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
   .name = "defaultTask",
   .priority = (osPriority_t) osPriorityNormal,
-  .stack_size = 128
+  .stack_size = 1000
 };
 /* Definitions for myTask02 */
 osThreadId_t myTask02Handle;
 const osThreadAttr_t myTask02_attributes = {
   .name = "myTask02",
-  .priority = (osPriority_t) osPriorityAboveNormal,
-  .stack_size = 128
+  .priority = (osPriority_t) osPriorityNormal1,
+  .stack_size = 300
 };
 /* Definitions for usart_rx_dma_queue_id */
 osMessageQueueId_t usart_rx_dma_queue_idHandle;
@@ -128,17 +135,74 @@ void MX_FREERTOS_Init(void) {
   * @param  argument: Not used 
   * @retval None
   */
+
 /* USER CODE END Header_StartDefaultTask */
 void StartDefaultTask(void *argument)
 {
   /* USER CODE BEGIN StartDefaultTask */
+uint8_t a = 0;
   /* Infinite loop */
-  for(;;)
-  {
-    osDelay(1000);
+	for(;;)
+	{
+
+		  if (ringbuff_read(&usart_rx_dma_ringbuff, &b, 1) == 1)
+		  {
+			  taskENTER_CRITICAL();
+
+	            ringbuff_write(&usart_tx_dma_ringbuff, &b, 1);   /* Write data to transmit buffer */
+	            //ringbuff_read(&usart_tx_dma_ringbuff, &a, 1);
+	            //usart_process_data2(&a, 1);
+	           usart_start_tx_dma_transfer();
+	            taskEXIT_CRITICAL();
+			  //usart_process_data2(&b, 1);
+					  /*switch (state) {
+						  case 0:
+
+							  if (b == '$') {
+								  local_buff[cnt++] = b;
+								  ++state;
+							  }
+							  break;
+
+						  case 1:
+							  if (cnt >= 98 ) {
+								  state = 0;
+								  cnt = 0;
+								  break;
+							  }
+
+							  local_buff[cnt++] = b;
+
+							  if (b == '*')
+							  {
+
+								  local_buff[cnt++] = '\n';
+								  ++state;
+
+								  break;
+							  }
+							  break;
+
+						  case 2:
+							  //usart_process_data2(&local_buff, cnt);
+
+							 //ringbuff_write(&usart_tx_dma_ringbuff, &local_buff, cnt);
+							 //usart_start_tx_dma_transfer();
+
+
+							  cnt = 0;
+							  state = 0;
+
+							  break;
+
+
+					  }*/
+		  }
+	 }
+	       osDelay(1);
   }
   /* USER CODE END StartDefaultTask */
-}
+
 
 /* USER CODE BEGIN Header_StartTask02 */
 /**
@@ -150,10 +214,21 @@ void StartDefaultTask(void *argument)
 void StartTask02(void *argument)
 {
   /* USER CODE BEGIN StartTask02 */
+	uint8_t set_flag = 0;
   /* Infinite loop */
   for(;;)
   {
-	HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
+	if(!set_flag)
+	{
+		HAL_GPIO_WritePin(LD1_GPIO_Port, LD1_Pin,GPIO_PIN_SET);
+		set_flag = 1;
+	}
+	else
+	{
+		HAL_GPIO_WritePin(LD1_GPIO_Port, LD1_Pin,GPIO_PIN_RESET);
+		set_flag = 0;
+	}
+
     osDelay(200);
   }
   /* USER CODE END StartTask02 */
